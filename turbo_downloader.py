@@ -11,7 +11,6 @@ class TurboDownloader:
     """Turbo-optimized file downloader"""
     
     def __init__(self):
-        self.download_queue = asyncio.Queue()
         self.active_downloads = 0
 
     async def download_file(self, message: Message, status_message: Message):
@@ -37,20 +36,19 @@ class TurboDownloader:
                 f"**Size:** {self.format_bytes(file_size)}"
             )
 
-            # Download with turbo settings
+            # Download with progress tracking - CORRECTED SYNTAX
             downloaded_path = await message.download(
                 file_name=file_path,
                 progress=self.progress_callback,
-                progress_args=(status_message, start_time, "📥 DOWNLOADING"),
-                chunk_size=Config.CHUNK_SIZE,
-                max_connections=4
+                progress_args=(status_message, start_time, "📥 DOWNLOADING")
             )
 
             if downloaded_path and os.path.exists(downloaded_path):
                 download_time = time.time() - start_time
-                speed = file_size / download_time if download_time > 0 else 0
+                actual_size = os.path.getsize(downloaded_path)
+                speed = actual_size / download_time if download_time > 0 else 0
                 
-                logger.info(f"Download completed: {file_name} in {download_time:.1f}s")
+                logger.info(f"Download completed: {file_name} ({self.format_bytes(actual_size)}) in {download_time:.1f}s")
                 
                 return {
                     'success': True, 
@@ -73,30 +71,43 @@ class TurboDownloader:
 
         elapsed = time.time() - start_time
         percent = (current / total) * 100
+        
+        # Only update every 5% progress or 2 seconds to reduce API calls
+        if int(percent) % 5 != 0 and elapsed % 2 > 0.1:
+            return
+
         speed = current / elapsed if elapsed > 0 else 0
         eta = (total - current) / speed if speed > 0 else 0
 
-        # Update every 5% or 3 seconds to reduce API calls
-        if int(percent) % 5 == 0 or elapsed % 3 < 0.1:
-            bar = "█" * int(percent / 5) + "░" * (20 - int(percent / 5))
-            
-            text = (
-                f"**{action}**\n\n"
-                f"`{bar}`\n"
-                f"**Progress:** {percent:.1f}%\n"
-                f"**Speed:** {self.format_bytes(speed)}/s\n"
-                f"**ETA:** {int(eta)}s"
-            )
-            
-            try:
-                await status_message.edit_text(text)
-            except:
-                pass
+        # Create progress bar
+        filled_blocks = int(percent / 5)
+        bar = "█" * filled_blocks + "░" * (20 - filled_blocks)
+        
+        progress_text = (
+            f"**{action}**\n\n"
+            f"`{bar}`\n"
+            f"**Progress:** {percent:.1f}%\n"
+            f"**Speed:** {self.format_bytes(speed)}/s\n"
+            f"**ETA:** {int(eta)}s | **Elapsed:** {int(elapsed)}s\n"
+            f"`{self.format_bytes(current)} / {self.format_bytes(total)}`"
+        )
+        
+        try:
+            await status_message.edit_text(progress_text)
+        except Exception as e:
+            # Silent fail to avoid breaking download
+            pass
 
     def format_bytes(self, size):
         """Format bytes to human readable"""
-        for unit in ['B', 'KB', 'MB', 'GB']:
-            if size < 1024.0:
-                return f"{size:.1f} {unit}"
+        if not size or size <= 0:
+            return "0 B"
+        
+        units = ['B', 'KB', 'MB', 'GB']
+        unit_index = 0
+        
+        while size >= 1024 and unit_index < len(units) - 1:
             size /= 1024.0
-        return f"{size:.1f} TB"
+            unit_index += 1
+            
+        return f"{size:.1f} {units[unit_index]}"

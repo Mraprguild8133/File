@@ -10,10 +10,9 @@ class Config:
     LOG_CHANNEL = int(os.getenv("LOG_CHANNEL", "-1001234567890"))
     
     # Turbo Performance Settings
-    MAX_WORKERS = 200
-    MAX_CONCURRENT_DOWNLOADS = 10
-    MAX_CONCURRENT_UPLOADS = 10
-    CHUNK_SIZE = 256 * 1024  # 256KB chunks
+    MAX_WORKERS = 100  # Reduced for stability
+    MAX_CONCURRENT_DOWNLOADS = 3  # Reduced for stability
+    MAX_CONCURRENT_UPLOADS = 3    # Reduced for stability
     
     # Thumbnail Settings
     CUSTOM_THUMBNAIL = "thumbnail.jpg"

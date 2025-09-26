@@ -8,14 +8,17 @@ import logging
 logger = logging.getLogger(__name__)
 
 class TurboDownloader:
-    """Turbo-optimized file downloader"""
+    """Turbo-optimized file downloader with flood protection"""
     
     def __init__(self):
-        self.active_downloads = 0
+        self.last_update_time = 0
+        self.last_percent = 0
 
     async def download_file(self, message: Message, status_message: Message):
-        """Download file with extreme speed"""
+        """Download file with flood protection"""
         start_time = time.time()
+        self.last_update_time = 0
+        self.last_percent = 0
         
         try:
             file_obj = message.document or message.video or message.audio
@@ -29,14 +32,16 @@ class TurboDownloader:
             os.makedirs('downloads', exist_ok=True)
             file_path = os.path.join('downloads', f"temp_{int(time.time())}_{file_name}")
 
-            # Update status
-            await status_message.edit_text(
-                f"📥 **Turbo Download Starting...**\n\n"
+            # Initial status message (only once)
+            initial_text = (
+                f"📥 **Downloading...**\n\n"
                 f"**File:** `{file_name}`\n"
-                f"**Size:** {self.format_bytes(file_size)}"
+                f"**Size:** {self.format_bytes(file_size)}\n"
+                f"**Status:** Starting..."
             )
+            await status_message.edit_text(initial_text)
 
-            # Download with progress tracking - CORRECTED SYNTAX
+            # Download with progress tracking
             downloaded_path = await message.download(
                 file_name=file_path,
                 progress=self.progress_callback,
@@ -48,7 +53,7 @@ class TurboDownloader:
                 actual_size = os.path.getsize(downloaded_path)
                 speed = actual_size / download_time if download_time > 0 else 0
                 
-                logger.info(f"Download completed: {file_name} ({self.format_bytes(actual_size)}) in {download_time:.1f}s")
+                logger.info(f"Download completed: {file_name} in {download_time:.1f}s")
                 
                 return {
                     'success': True, 
@@ -65,37 +70,52 @@ class TurboDownloader:
             return {'success': False, 'error': str(e)}
 
     async def progress_callback(self, current, total, status_message, start_time, action):
-        """Optimized progress callback"""
+        """Flood-protected progress callback"""
         if total == 0:
             return
 
-        elapsed = time.time() - start_time
+        current_time = time.time()
+        elapsed = current_time - start_time
         percent = (current / total) * 100
         
-        # Only update every 5% progress or 2 seconds to reduce API calls
-        if int(percent) % 5 != 0 and elapsed % 2 > 0.1:
+        # Flood protection: Update only if:
+        # 1. At least 3 seconds passed since last update AND progress increased by at least 2%
+        # 2. Or if it's the first update
+        # 3. Or if download is complete (100%)
+        should_update = (
+            current_time - self.last_update_time >= 3 and 
+            percent - self.last_percent >= 2
+        ) or self.last_update_time == 0 or percent >= 99.9
+
+        if not should_update:
             return
 
         speed = current / elapsed if elapsed > 0 else 0
         eta = (total - current) / speed if speed > 0 else 0
 
-        # Create progress bar
-        filled_blocks = int(percent / 5)
-        bar = "█" * filled_blocks + "░" * (20 - filled_blocks)
+        # Create progress bar (only 10 blocks for fewer updates)
+        filled_blocks = min(10, int(percent / 10))
+        bar = "▓" * filled_blocks + "░" * (10 - filled_blocks)
         
         progress_text = (
             f"**{action}**\n\n"
-            f"`{bar}`\n"
-            f"**Progress:** {percent:.1f}%\n"
+            f"`{bar} {percent:.1f}%`\n"
             f"**Speed:** {self.format_bytes(speed)}/s\n"
-            f"**ETA:** {int(eta)}s | **Elapsed:** {int(elapsed)}s\n"
-            f"`{self.format_bytes(current)} / {self.format_bytes(total)}`"
+            f"**Time:** {int(elapsed)}s / ~{int(eta)}s\n"
+            f"**Progress:** {self.format_bytes(current)} / {self.format_bytes(total)}"
         )
         
         try:
             await status_message.edit_text(progress_text)
+            self.last_update_time = current_time
+            self.last_percent = percent
         except Exception as e:
-            # Silent fail to avoid breaking download
+            # If flood wait error, wait and retry
+            if "FLOOD_WAIT" in str(e):
+                wait_time = int(str(e).split("FLOOD_WAIT_")[1].split(")")[0])
+                logger.warning(f"Flood wait detected, waiting {wait_time}s")
+                await asyncio.sleep(wait_time)
+            # For other errors, just skip this update
             pass
 
     def format_bytes(self, size):

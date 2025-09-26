@@ -9,12 +9,13 @@ import logging
 logger = logging.getLogger(__name__)
 
 class TurboUploader:
-    """Turbo-optimized file uploader with flood protection"""
+    """Turbo-optimized file uploader with duplicate prevention"""
     
     def __init__(self):
         self.thumbnail = self.load_thumbnail()
         self.last_update_time = 0
         self.last_percent = 0
+        self.last_message_text = ""
 
     def load_thumbnail(self):
         """Load or create thumbnail"""
@@ -28,10 +29,11 @@ class TurboUploader:
         return None
 
     async def upload_file(self, client, chat_id, file_path, status_message, caption):
-        """Upload file with flood protection"""
+        """Upload file with duplicate prevention"""
         start_time = time.time()
         self.last_update_time = 0
         self.last_percent = 0
+        self.last_message_text = ""
         
         try:
             if not os.path.exists(file_path):
@@ -42,12 +44,13 @@ class TurboUploader:
 
             # Initial status (only once)
             initial_text = (
-                f"📤 **Uploading...**\n\n"
+                f"📤 **Uploading File**\n\n"
                 f"**File:** `{file_name}`\n"
                 f"**Size:** {self.format_bytes(file_size)}\n"
-                f"**Status:** Starting..."
+                f"**Status:** Starting upload..."
             )
             await status_message.edit_text(initial_text)
+            self.last_message_text = initial_text
 
             # Upload with progress tracking
             await client.send_document(
@@ -56,7 +59,7 @@ class TurboUploader:
                 caption=caption,
                 thumb=self.thumbnail,
                 progress=self.progress_callback,
-                progress_args=(status_message, start_time, "📤 UPLOADING")
+                progress_args=(status_message, start_time, "UPLOADING")
             )
 
             upload_time = time.time() - start_time
@@ -64,21 +67,18 @@ class TurboUploader:
             
             logger.info(f"Upload completed: {file_name} in {upload_time:.1f}s")
             
-            # Final completion message
+            # Final completion message (only if different)
             completion_text = (
-                f"✅ **Upload Complete!**\n\n"
+                f"✅ **Upload Complete**\n\n"
                 f"**File:** `{file_name}`\n"
-                f"**Time:** {int(upload_time)}s\n"
+                f"**Time:** {int(upload_time)} seconds\n"
                 f"**Speed:** {self.format_bytes(speed)}/s"
             )
             
-            try:
+            if completion_text != self.last_message_text:
                 await status_message.edit_text(completion_text)
-                # Delete after 3 seconds
-                await asyncio.sleep(3)
+                await asyncio.sleep(2)
                 await status_message.delete()
-            except:
-                pass
                 
             return {'success': True, 'upload_time': upload_time, 'speed': speed}
 
@@ -87,7 +87,7 @@ class TurboUploader:
             return {'success': False, 'error': str(e)}
 
     async def progress_callback(self, current, total, status_message, start_time, action):
-        """Flood-protected upload progress callback"""
+        """Duplicate-protected upload progress callback"""
         if total == 0:
             return
 
@@ -95,14 +95,19 @@ class TurboUploader:
         elapsed = current_time - start_time
         percent = (current / total) * 100
         
-        # Flood protection: Update only if:
-        # 1. At least 4 seconds passed AND progress increased by at least 3%
-        # 2. Or if it's the first update
-        # 3. Or if upload is complete
+        # Prevent duplicates: Update only if:
+        # 1. At least 6 seconds passed since last update
+        # 2. AND progress increased by at least 8%
+        # 3. OR it's the first update
+        # 4. OR upload is complete (95%+)
+        time_passed = current_time - self.last_update_time
+        progress_increased = percent - self.last_percent
+        
         should_update = (
-            current_time - self.last_update_time >= 4 and 
-            percent - self.last_percent >= 3
-        ) or self.last_update_time == 0 or percent >= 99.9
+            (time_passed >= 6 and progress_increased >= 8) or
+            self.last_update_time == 0 or
+            percent >= 95
+        )
 
         if not should_update:
             return
@@ -110,30 +115,30 @@ class TurboUploader:
         speed = current / elapsed if elapsed > 0 else 0
         eta = (total - current) / speed if speed > 0 else 0
 
-        # Simple progress display
-        filled_blocks = min(8, int(percent / 12.5))
-        bar = "█" * filled_blocks + "▒" * (8 - filled_blocks)
-        
         progress_text = (
-            f"**{action}**\n\n"
-            f"`{bar} {percent:.1f}%`\n"
+            f"📤 **Uploading File**\n\n"
+            f"**Progress:** {percent:.1f}%\n"
             f"**Speed:** {self.format_bytes(speed)}/s\n"
-            f"**Remaining:** ~{int(eta)}s\n"
-            f"**Progress:** {self.format_bytes(current)} / {self.format_bytes(total)}"
+            f"**Remaining:** ~{int(eta)} seconds\n"
+            f"**Transferred:** {self.format_bytes(current)} / {self.format_bytes(total)}"
         )
         
-        try:
-            await status_message.edit_text(progress_text)
-            self.last_update_time = current_time
-            self.last_percent = percent
-        except Exception as e:
-            # Handle flood wait specifically
-            if "FLOOD_WAIT" in str(e):
-                wait_time = int(str(e).split("FLOOD_WAIT_")[1].split(")")[0])
-                logger.warning(f"Upload flood wait: {wait_time}s")
-                await asyncio.sleep(wait_time)
-            # Skip update for other errors
-            pass
+        # Only update if message content actually changed
+        if progress_text != self.last_message_text:
+            try:
+                await status_message.edit_text(progress_text)
+                self.last_message_text = progress_text
+                self.last_update_time = current_time
+                self.last_percent = percent
+            except Exception as e:
+                if "FLOOD_WAIT" in str(e):
+                    try:
+                        wait_time = int(str(e).split("FLOOD_WAIT_")[1].split(")")[0])
+                        logger.info(f"Upload flood wait: {wait_time}s")
+                        await asyncio.sleep(wait_time)
+                    except:
+                        pass
+                # Skip update for other errors
 
     def format_bytes(self, size):
         """Format bytes to human readable"""

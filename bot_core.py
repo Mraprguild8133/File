@@ -1,10 +1,14 @@
+import os
+import time
+import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
 from config import Config
 from file_processor import TurboFileProcessor
-import asyncio
-import time
 from datetime import datetime, timedelta
+import logging
+
+logger = logging.getLogger(__name__)
 
 # User session management
 user_sessions = {}
@@ -45,6 +49,8 @@ def setup_bot_handlers(client: Client):
             "Just send a file to begin!"
         )
 
+    # ... rest of the bot_core.py code remains the same ...
+    # (Keep all the other functions as they were)
     @client.on_message(filters.command("stats"))
     async def user_stats(_, message: Message):
         user_id = message.from_user.id

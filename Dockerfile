@@ -14,4 +14,4 @@ EXPOSE 5000
 # Health check
 HEALTHCHECK CMD curl -f http://localhost:5000/ || exit 1
 
-CMD ["python", "main.py"]
+CMD ["python", "bot.py"]

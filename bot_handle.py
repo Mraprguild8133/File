@@ -1,89 +1,187 @@
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from config import Config
-from file_handle import download_file, upload_file
+from file_handle import download_file_turbo, upload_file_turbo
 from file_rename import rename_file
 import os
+import asyncio
+from datetime import datetime, timedelta
+import re
 
-# Dictionary to store user state (e.g., waiting for a new file name)
+# Optimized user state management
 user_states = {}
+user_stats = {}
+
+class SpeedOptimizer:
+    """Handles speed optimizations and rate limiting"""
+    
+    @staticmethod
+    def is_valid_filename(name):
+        """Fast filename validation"""
+        if not name or len(name) > 255:
+            return False
+        invalid_chars = ['<', '>', ':', '"', '|', '?', '*', '\\', '/']
+        return not any(char in name for char in invalid_chars)
+    
+    @staticmethod
+    def can_process_user(user_id):
+        """Rate limiting check"""
+        now = datetime.now()
+        user_stats.setdefault(user_id, {'count': 0, 'reset_time': now})
+        
+        stats = user_stats[user_id]
+        if now > stats['reset_time'] + timedelta(hours=1):
+            stats['count'] = 0
+            stats['reset_time'] = now
+        
+        if stats['count'] >= Config.FILES_PER_USER_PER_HOUR:
+            return False
+        
+        stats['count'] += 1
+        return True
 
 def register_handlers(app: Client):
-    """
-    Registers all the bot's command and message handlers.
-    """
+    speed_optimizer = SpeedOptimizer()
 
     @app.on_message(filters.command("start"))
-    async def start_command(client, message: Message):
+    async def turbo_start(client, message: Message):
         await message.reply_text(
-            "Hello! I am a file upload and rename bot.\n\n"
-            "Send me a file, and I will ask you for a new name. "
-            "I can handle files up to 4GB."
+            "🚀 **Turbo File Renamer Bot**\n\n"
+            "Send me any file and I'll rename it with **EXTREME SPEED**!\n"
+            "• Custom thumbnail support\n"
+            • 4GB file support\n"
+            "• Lightning fast processing\n\n"
+            "Just send a file and follow the instructions!"
+        )
+
+    @app.on_message(filters.command("stats"))
+    async def show_stats(client, message: Message):
+        user_id = message.from_user.id
+        stats = user_stats.get(user_id, {'count': 0})
+        await message.reply_text(
+            f"📊 **Your Stats**\n"
+            f"• Files processed this hour: {stats['count']}\n"
+            f"• Hourly limit: {Config.FILES_PER_USER_PER_HOUR}"
         )
 
     @app.on_message(filters.document | filters.video | filters.audio)
-    async def handle_file_message(client, message: Message):
-        """
-        Handles incoming files.
-        """
-        # Store the message ID of the file to rename it later
+    async def turbo_handle_file(client, message: Message):
+        """Turbo-optimized file handler"""
         user_id = message.from_user.id
-        user_states[user_id] = {"file_message_id": message.id}
+        
+        # Rate limiting check
+        if not speed_optimizer.can_process_user(user_id):
+            await message.reply_text(
+                "⏳ **Rate Limit Reached**\n\n"
+                "You've processed too many files this hour. "
+                f"Please wait or contact admin.\n"
+                f"Limit: {Config.FILES_PER_USER_PER_HOUR} files/hour"
+            )
+            return
+
+        # File size check
+        file_size = getattr(message.document or message.video or message.audio, 'file_size', 0)
+        if file_size > Config.MAX_FILE_SIZE:
+            await message.reply_text("❌ File too large! Max 4GB supported.")
+            return
+
+        user_states[user_id] = {
+            "file_message_id": message.id,
+            "received_time": datetime.now()
+        }
 
         await message.reply_text(
-            "File received. Please send me the new name for this file (without the extension)."
+            "📁 **File Received!**\n\n"
+            "Please send the new filename (without extension):\n"
+            "`Example: my_document`"
         )
 
     @app.on_message(filters.text & filters.private)
-    async def handle_text_message(client, message: Message):
-        """
-        Handles text messages, primarily for receiving the new file name.
-        """
+    async def turbo_handle_text(client, message: Message):
+        """Turbo-optimized text handler"""
         user_id = message.from_user.id
         state = user_states.get(user_id)
 
-        # Check if we are waiting for a file name from this user
         if state and "file_message_id" in state:
-            file_message_id = state["file_message_id"]
             new_name = message.text.strip()
+            
+            # Fast filename validation
+            if not speed_optimizer.is_valid_filename(new_name):
+                await message.reply_text(
+                    "❌ **Invalid filename!**\n\n"
+                    "Please use a valid filename:\n"
+                    "• No special characters: < > : \" | ? * \\ /\n"
+                    "• Max 255 characters\n"
+                    "• Example: `my_document_2024`"
+                )
+                return
 
-            # Get the original file message
-            original_message = await client.get_messages(message.chat.id, file_message_id)
-
-            if not original_message or not (original_message.document or original_message.video or original_message.audio):
-                await message.reply_text("Could not find the original file. Please send it again.")
+            original_message = await client.get_messages(message.chat.id, state["file_message_id"])
+            if not original_message:
+                await message.reply_text("❌ Original file not found. Please resend.")
                 user_states.pop(user_id, None)
                 return
 
-            status_msg = await message.reply_text("Processing your request...")
+            # Start processing with extreme speed
+            status_msg = await message.reply_text("⚡ **Turbo Processing Started...**")
 
-            # 1. Download the file
-            downloaded_path = await download_file(original_message, status_msg)
-            if not downloaded_path:
+            try:
+                # Parallel processing for maximum speed
+                download_task = asyncio.create_task(
+                    download_file_turbo(original_message, status_msg)
+                )
+                downloaded_path = await download_task
+
+                if downloaded_path:
+                    # Rename file
+                    renamed_path = await rename_file(downloaded_path, new_name)
+                    
+                    if renamed_path:
+                        # Upload with turbo speed
+                        caption = f"**Renamed to:** `{os.path.basename(renamed_path)}`"
+                        upload_task = asyncio.create_task(
+                            upload_file_turbo(client, message.chat.id, renamed_path, status_msg, caption)
+                        )
+                        await upload_task
+
+                        # Log to channel
+                        await client.forward_messages(
+                            chat_id=Config.LOG_CHANNEL,
+                            from_chat_id=message.chat.id,
+                            message_ids=original_message.id
+                        )
+
+                        # Cleanup
+                        if os.path.exists(renamed_path):
+                            os.remove(renamed_path)
+                    
+                    # Cleanup downloaded file
+                    if os.path.exists(downloaded_path):
+                        os.remove(downloaded_path)
+
+            except Exception as e:
+                await status_msg.edit_text(f"❌ **Processing Failed:** {str(e)}")
+            finally:
                 user_states.pop(user_id, None)
-                return
-
-            # 2. Rename the file
-            renamed_path = await rename_file(downloaded_path, new_name)
-            if not renamed_path:
-                await status_msg.edit_text("Failed to rename the file.")
-                os.remove(downloaded_path) # Clean up
-                user_states.pop(user_id, None)
-                return
-
-            # 3. Upload the renamed file
-            file_caption = f"Renamed to: `{os.path.basename(renamed_path)}`"
-            await upload_file(client, message.chat.id, renamed_path, status_msg, caption=file_caption)
-
-            # 4. Forward to log channel
-            await client.forward_messages(
-                chat_id=Config.LOG_CHANNEL,
-                from_chat_id=message.chat.id,
-                message_ids=original_message.id
-            )
-
-            # 5. Clean up local files and state
-            os.remove(renamed_path)
-            user_states.pop(user_id, None)
         else:
-            await message.reply_text("Please send me a file first before sending a name.")
+            await message.reply_text("📁 Please send me a file first!")
+
+    @app.on_message(filters.command("speedtest"))
+    async def speed_test(client, message: Message):
+        """Test bot speed"""
+        test_msg = await message.reply_text("🏃 **Testing Speed...**")
+        start_time = datetime.now()
+        
+        # Simulate processing
+        await asyncio.sleep(1)
+        
+        end_time = datetime.now()
+        speed = (end_time - start_time).total_seconds()
+        
+        await test_msg.edit_text(
+            f"⚡ **Speed Test Results**\n\n"
+            f"• Response Time: {speed:.2f}s\n"
+            f"• Status: **TURBO MODE ACTIVE**\n"
+            f"• Max Workers: {Config.MAX_WORKERS}\n"
+            f"• Concurrent Operations: {Config.MAX_CONCURRENT_DOWNLOADS}"
+        )

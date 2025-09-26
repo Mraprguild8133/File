@@ -3,33 +3,115 @@ import time
 import asyncio
 from pyrogram.types import Message
 from config import Config
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import logging
 
 logger = logging.getLogger(__name__)
 
 class TurboUploader:
-    """Turbo-optimized file uploader with duplicate prevention"""
+    """Turbo-optimized file uploader with advanced thumbnail support"""
     
     def __init__(self):
-        self.thumbnail = self.load_thumbnail()
+        self.thumbnail = self.create_or_load_thumbnail()
         self.last_update_time = 0
         self.last_percent = 0
         self.last_message_text = ""
 
-    def load_thumbnail(self):
-        """Load or create thumbnail"""
+    def create_or_load_thumbnail(self):
+        """Create or load thumbnail with advanced features"""
         try:
+            # Try to load custom thumbnail
             if os.path.exists(Config.CUSTOM_THUMBNAIL):
                 with Image.open(Config.CUSTOM_THUMBNAIL) as img:
-                    img.thumbnail(Config.THUMBNAIL_SIZE)
-                return Config.CUSTOM_THUMBNAIL
+                    img = self.process_thumbnail(img)
+                    thumb_path = "processed_thumbnail.jpg"
+                    img.save(thumb_path, "JPEG", quality=95)
+                    logger.info("Custom thumbnail loaded and processed")
+                    return thumb_path
         except Exception as e:
-            logger.warning(f"Thumbnail load failed: {e}")
-        return None
+            logger.warning(f"Custom thumbnail failed: {e}")
+
+        # Create default thumbnail
+        return self.create_default_thumbnail()
+
+    def process_thumbnail(self, img):
+        """Process thumbnail for optimal quality"""
+        # Convert to RGB if necessary
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        
+        # Resize to optimal dimensions
+        img.thumbnail(Config.THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
+        
+        return img
+
+    def create_default_thumbnail(self):
+        """Create a beautiful default thumbnail"""
+        try:
+            # Create image with gradient background
+            img = Image.new('RGB', Config.THUMBNAIL_SIZE, color='#2563eb')
+            draw = ImageDraw.Draw(img)
+            
+            # Add gradient effect
+            for i in range(Config.THUMBNAIL_SIZE[1]):
+                ratio = i / Config.THUMBNAIL_SIZE[1]
+                color = self.interpolate_color('#2563eb', '#1e40af', ratio)
+                draw.line([(0, i), (Config.THUMBNAIL_SIZE[0], i)], fill=color)
+            
+            # Try to load fonts
+            try:
+                title_font = ImageFont.truetype("arialbd.ttf", 36)
+                subtitle_font = ImageFont.truetype("arial.ttf", 18)
+            except:
+                # Fallback to default fonts
+                try:
+                    title_font = ImageFont.load_default()
+                    subtitle_font = ImageFont.load_default()
+                except:
+                    title_font = None
+                    subtitle_font = None
+
+            # Add main text
+            text = "TURBO BOT"
+            if title_font:
+                bbox = draw.textbbox((0, 0), text, font=title_font)
+                text_width = bbox[2] - bbox[0]
+                x = (Config.THUMBNAIL_SIZE[0] - text_width) // 2
+                y = Config.THUMBNAIL_SIZE[1] // 2 - 30
+                draw.text((x, y), text, font=title_font, fill='white')
+            
+            # Add subtitle
+            subtitle = "File Renamer"
+            if subtitle_font:
+                bbox = draw.textbbox((0, 0), subtitle, font=subtitle_font)
+                sub_width = bbox[2] - bbox[0]
+                x_sub = (Config.THUMBNAIL_SIZE[0] - sub_width) // 2
+                y_sub = y + 50
+                draw.text((x_sub, y_sub), subtitle, font=subtitle_font, fill='#e5e7eb')
+            
+            # Save thumbnail
+            thumb_path = "default_thumbnail.jpg"
+            img.save(thumb_path, "JPEG", quality=90, optimize=True)
+            logger.info("Default thumbnail created successfully")
+            return thumb_path
+            
+        except Exception as e:
+            logger.error(f"Failed to create thumbnail: {e}")
+            return None
+
+    def interpolate_color(self, color1, color2, ratio):
+        """Create gradient color"""
+        r1, g1, b1 = int(color1[1:3], 16), int(color1[3:5], 16), int(color1[5:7], 16)
+        r2, g2, b2 = int(color2[1:3], 16), int(color2[3:5], 16), int(color2[5:7], 16)
+        
+        r = int(r1 + (r2 - r1) * ratio)
+        g = int(g1 + (g2 - g1) * ratio)
+        b = int(b1 + (b2 - b1) * ratio)
+        
+        return f'#{r:02x}{g:02x}{b:02x}'
 
     async def upload_file(self, client, chat_id, file_path, status_message, caption):
-        """Upload file with duplicate prevention"""
+        """Upload file with thumbnail and logging"""
         start_time = time.time()
         self.last_update_time = 0
         self.last_percent = 0
@@ -42,18 +124,19 @@ class TurboUploader:
             file_size = os.path.getsize(file_path)
             file_name = os.path.basename(file_path)
 
-            # Initial status (only once)
+            # Initial status
             initial_text = (
                 f"📤 **Uploading File**\n\n"
                 f"**File:** `{file_name}`\n"
                 f"**Size:** {self.format_bytes(file_size)}\n"
+                f"**Thumbnail:** {'✅' if self.thumbnail else '❌'}\n"
                 f"**Status:** Starting upload..."
             )
             await status_message.edit_text(initial_text)
             self.last_message_text = initial_text
 
-            # Upload with progress tracking
-            await client.send_document(
+            # Upload with thumbnail
+            message = await client.send_document(
                 chat_id=chat_id,
                 document=file_path,
                 caption=caption,
@@ -67,27 +150,22 @@ class TurboUploader:
             
             logger.info(f"Upload completed: {file_name} in {upload_time:.1f}s")
             
-            # Final completion message (only if different)
-            completion_text = (
-                f"✅ **Upload Complete**\n\n"
-                f"**File:** `{file_name}`\n"
-                f"**Time:** {int(upload_time)} seconds\n"
-                f"**Speed:** {self.format_bytes(speed)}/s"
-            )
-            
-            if completion_text != self.last_message_text:
-                await status_message.edit_text(completion_text)
-                await asyncio.sleep(2)
-                await status_message.delete()
-                
-            return {'success': True, 'upload_time': upload_time, 'speed': speed}
+            # Return message object for logging
+            return {
+                'success': True, 
+                'upload_time': upload_time, 
+                'speed': speed,
+                'message': message,
+                'file_name': file_name,
+                'file_size': file_size
+            }
 
         except Exception as e:
             logger.error(f"Upload error: {e}")
             return {'success': False, 'error': str(e)}
 
     async def progress_callback(self, current, total, status_message, start_time, action):
-        """Duplicate-protected upload progress callback"""
+        """Progress callback with thumbnail status"""
         if total == 0:
             return
 
@@ -95,16 +173,12 @@ class TurboUploader:
         elapsed = current_time - start_time
         percent = (current / total) * 100
         
-        # Prevent duplicates: Update only if:
-        # 1. At least 6 seconds passed since last update
-        # 2. AND progress increased by at least 8%
-        # 3. OR it's the first update
-        # 4. OR upload is complete (95%+)
+        # Update conditions
         time_passed = current_time - self.last_update_time
         progress_increased = percent - self.last_percent
         
         should_update = (
-            (time_passed >= 6 and progress_increased >= 8) or
+            (time_passed >= 5 and progress_increased >= 5) or
             self.last_update_time == 0 or
             percent >= 95
         )
@@ -119,11 +193,11 @@ class TurboUploader:
             f"📤 **Uploading File**\n\n"
             f"**Progress:** {percent:.1f}%\n"
             f"**Speed:** {self.format_bytes(speed)}/s\n"
-            f"**Remaining:** ~{int(eta)} seconds\n"
+            f"**Thumbnail:** {'✅' if self.thumbnail else '❌'}\n"
+            f"**ETA:** ~{int(eta)}s\n"
             f"**Transferred:** {self.format_bytes(current)} / {self.format_bytes(total)}"
         )
         
-        # Only update if message content actually changed
         if progress_text != self.last_message_text:
             try:
                 await status_message.edit_text(progress_text)
@@ -134,11 +208,9 @@ class TurboUploader:
                 if "FLOOD_WAIT" in str(e):
                     try:
                         wait_time = int(str(e).split("FLOOD_WAIT_")[1].split(")")[0])
-                        logger.info(f"Upload flood wait: {wait_time}s")
                         await asyncio.sleep(wait_time)
                     except:
                         pass
-                # Skip update for other errors
 
     def format_bytes(self, size):
         """Format bytes to human readable"""

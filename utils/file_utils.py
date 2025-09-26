@@ -3,7 +3,6 @@ import logging
 import tempfile
 from PIL import Image, ImageOps
 import asyncio
-import aiofiles
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +45,10 @@ def create_thumbnail(file_path: str, size: tuple) -> str:
     """Create thumbnail for image/video files."""
     try:
         with Image.open(file_path) as img:
+            # Convert to RGB if necessary
+            if img.mode in ('RGBA', 'P'):
+                img = img.convert('RGB')
+            
             img = ImageOps.fit(img, size, Image.Resampling.LANCZOS)
             thumbnail_path = file_path + "_thumb.jpg"
             img.save(thumbnail_path, "JPEG", quality=85)

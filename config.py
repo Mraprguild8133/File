@@ -15,7 +15,7 @@ class Config:
     MAX_CONCURRENT_UPLOADS = 3    # Reduced for stability
     
     # Thumbnail Settings
-    CUSTOM_THUMBNAIL = "thumbnail.jpg"
+    CUSTOM_THUMBNAIL = "./downloads"
     THUMBNAIL_SIZE = (320, 320)
     
     # File Limits

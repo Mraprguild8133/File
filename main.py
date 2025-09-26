@@ -1,7 +1,7 @@
 # =====================================================================================
 # Project: Telegram File Rename Bot
 # Description: A bot to rename Telegram files with custom thumbnail and caption support.
-# Version: 2.2 (Multi-File, No Database, Fixed Media Errors)
+# Version: 2.3 (Multi-File, No Database, Fixed Ask Method)
 # Last Updated: 26-Sep-2025
 # =====================================================================================
 
@@ -13,6 +13,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 from datetime import datetime
 from urllib.parse import urlparse
+from typing import Dict, Optional
 
 # Third-party libraries
 try:
@@ -69,6 +70,7 @@ I ᴀᴍ ᴀɴ Aᴅᴠᴀɴᴄᴇᴅ Fɪʟᴇ Rᴇɴᴀᴍᴇʀ ᴀɴᴅ Cᴏɴ�
 
 # --- In-Memory Data Storage ---
 user_data = {}
+waiting_for_rename: Dict[int, int] = {}  # user_id: message_id
 
 class InMemoryDatabase:
     def __init__(self, user_id):
@@ -171,6 +173,10 @@ async def start_command(client, message):
 
 @bot.on_message(filters.private & (filters.document | filters.video | filters.audio))
 async def file_handler(client, message: Message):
+    # Check if user is waiting for rename input
+    if message.from_user.id in waiting_for_rename:
+        return  # Ignore files while waiting for filename
+    
     file = message.document or message.video or message.audio
     
     # File size validation (optional - remove if not needed)
@@ -191,6 +197,10 @@ async def file_handler(client, message: Message):
 
 @bot.on_message(filters.private & filters.photo)
 async def set_thumbnail_command(client, message):
+    # Check if user is waiting for rename input
+    if message.from_user.id in waiting_for_rename:
+        return  # Ignore photos while waiting for filename
+    
     await InMemoryDatabase(message.from_user.id).set_thumbnail(message.photo.file_id)
     await message.reply_text("✅ Your custom thumbnail has been saved.", quote=True)
 
@@ -228,26 +238,59 @@ async def see_thumbnail_command(client, message):
     else:
         await message.reply_text("No custom thumbnail set.", quote=True)
 
+@bot.on_message(filters.private & filters.text)
+async def handle_rename_input(client, message: Message):
+    """Handle filename input for rename operation"""
+    user_id = message.from_user.id
+    
+    if user_id in waiting_for_rename:
+        original_message_id = waiting_for_rename[user_id]
+        
+        # Remove user from waiting list
+        del waiting_for_rename[user_id]
+        
+        try:
+            # Get the original message that contained the file
+            original_message = await client.get_messages(user_id, original_message_id)
+            
+            if original_message and (original_message.document or original_message.video or original_message.audio):
+                await message.reply_text("🔄 Processing your request...")
+                await process_rename(client, original_message, message.text, user_id)
+            else:
+                await message.reply_text("❌ Original file message not found. Please send the file again.")
+                
+        except Exception as e:
+            LOGGER.error(f"Error in rename processing: {e}")
+            await message.reply_text("❌ An error occurred. Please try again.")
+        
+        # Delete the input message to keep chat clean
+        try:
+            await message.delete()
+        except:
+            pass
+
 # --- Callback Query Handler ---
 @bot.on_callback_query()
 async def callback_query_handler(client, query: CallbackQuery):
     data = query.data
     message = query.message
+    user_id = query.from_user.id
     
     if data == "rename":
-        await message.delete()
-        try:
-            ask = await client.ask(
-                query.from_user.id, 
-                "**Send me the new filename.**\n\n_Include the file extension._", 
-                timeout=300
+        # Store the original message ID and ask for new filename
+        if message.reply_to_message:
+            waiting_for_rename[user_id] = message.reply_to_message.id
+            
+            # Send prompt for new filename
+            prompt_msg = await client.send_message(
+                user_id,
+                "**Send me the new filename.**\n\n_Include the file extension._\n\n**Type /cancel to cancel.**"
             )
-            await process_rename(client, message.reply_to_message, ask.text, query.from_user.id)
-        except asyncio.TimeoutError:
-            await client.send_message(query.from_user.id, "⚠️ **Timeout:** Task cancelled.")
-        except Exception as e:
-            LOGGER.error(f"Error in rename callback: {e}")
-            await client.send_message(query.from_user.id, "❌ An error occurred. Please try again.")
+            
+            # Set a timeout to clear waiting status
+            asyncio.create_task(clear_waiting_status(user_id))
+            
+        await message.delete()
             
     elif data == "close": 
         await message.delete()
@@ -265,6 +308,26 @@ async def callback_query_handler(client, query: CallbackQuery):
             [InlineKeyboardButton('Aʙᴏᴜᴛ', callback_data='about'), InlineKeyboardButton('Hᴇʟᴘ', callback_data='help')]
         ])
         await message.edit(Txt.START_MSG.format(query.from_user.mention), reply_markup=buttons)
+
+@bot.on_message(filters.private & filters.command("cancel"))
+async def cancel_command(client, message):
+    """Cancel any pending operation"""
+    user_id = message.from_user.id
+    if user_id in waiting_for_rename:
+        del waiting_for_rename[user_id]
+        await message.reply_text("✅ Operation cancelled.")
+    else:
+        await message.reply_text("❌ No pending operation to cancel.")
+
+async def clear_waiting_status(user_id: int, delay: int = 300):
+    """Clear waiting status after delay"""
+    await asyncio.sleep(delay)
+    if user_id in waiting_for_rename:
+        del waiting_for_rename[user_id]
+        try:
+            await bot.send_message(user_id, "⏰ Rename operation timed out. Please try again.")
+        except:
+            pass
 
 async def process_rename(client, message, new_name: str, user_id: int):
     # Validate filename
@@ -327,7 +390,9 @@ async def process_rename(client, message, new_name: str, user_id: int):
     await status_msg.edit("📤 Uploading...")
     
     # Prepare caption
-    caption = user_info.get('caption', '{filename}').format(
+    default_caption = "{filename}"
+    caption_template = user_info.get('caption', default_caption)
+    caption = caption_template.format(
         filename=new_name, 
         filesize=humanbytes(file.file_size)
     )

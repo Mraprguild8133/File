@@ -13,16 +13,17 @@ logger = logging.getLogger(__name__)
 # User session management
 user_sessions = {}
 file_processor = TurboFileProcessor()
-# Track last message time per user to prevent spam
-user_last_message = {}
+
+# Message deduplication tracking
+user_last_messages = {}
+message_cooldown = 2  # seconds between messages per user
 
 def setup_bot_handlers(client: Client):
-    """Setup all bot handlers with flood protection"""
+    """Setup all bot handlers with duplicate prevention"""
     
     @client.on_message(filters.command("start"))
     async def turbo_start(_, message: Message):
-        # Flood protection check
-        if not await check_message_flood(message.from_user.id):
+        if not await check_message_duplicate(message.from_user.id):
             return
             
         keyboard = InlineKeyboardMarkup([
@@ -31,47 +32,39 @@ def setup_bot_handlers(client: Client):
         ])
         
         await message.reply_text(
-            f"🚀 **Turbo File Renamer Bot**\n\n"
-            f"• **Max Size:** {Config.MAX_FILE_SIZE // (1024**3)}GB\n"
-            f"• **Speed:** Optimized\n"
-            f"• **Updates:** Smart (anti-flood)\n\n"
-            f"Send a file to begin!",
+            "🚀 **Turbo File Renamer Bot**\n\n"
+            "• **Anti-Duplicate System:** Active\n"
+            "• **Smart Updates:** Every 5-6 seconds\n"
+            "• **Flood Protection:** Enabled\n\n"
+            "Send any file to get started!",
             reply_markup=keyboard
         )
 
     @client.on_message(filters.command("help"))
     async def turbo_help(_, message: Message):
-        if not await check_message_flood(message.from_user.id):
+        if not await check_message_duplicate(message.from_user.id):
             return
             
         await message.reply_text(
-            "📖 **How to Use:**\n\n"
-            "1. Send any file\n"
-            "2. Enter new filename\n"
-            "3. Wait for processing\n"
-            "4. Get renamed file!\n\n"
-            "⚡ **Anti-Flood System:**\n"
-            "• Smart progress updates\n"
-            "• Reduced API calls\n"
-            "• Automatic wait handling"
+            "📖 **Anti-Duplicate System**\n\n"
+            "To prevent flooding and duplicate messages:\n"
+            "• Progress updates every 5-6 seconds only\n"
+            "• Messages only when content actually changes\n"
+            "• Cooldown between user messages\n"
+            "• Smart rate limiting\n\n"
+            "This ensures smooth operation without errors!"
         )
 
     @client.on_message(filters.document | filters.video | filters.audio)
     async def handle_file(client, message: Message):
-        """Handle incoming files with flood protection"""
+        """Handle incoming files with duplicate prevention"""
         user_id = message.from_user.id
         
-        if not await check_message_flood(user_id):
-            await message.reply_text("⏳ Please wait a moment before sending another file.")
+        if not await check_message_duplicate(user_id):
             return
 
         # Rate limiting
         if not await check_rate_limit(user_id):
-            await message.reply_text(
-                "⏳ **Rate Limit Reached**\n\n"
-                f"Limit: {Config.USER_RATE_LIMIT} files/hour\n"
-                "Please wait before sending more files."
-            )
             return
 
         # Check file size
@@ -89,7 +82,8 @@ def setup_bot_handlers(client: Client):
             'file_message': message,
             'file_size': file_size,
             'received_time': datetime.now(),
-            'waiting_for_name': True
+            'waiting_for_name': True,
+            'last_update': time.time()
         }
 
         await message.reply_text(
@@ -100,35 +94,48 @@ def setup_bot_handlers(client: Client):
 
     @client.on_message(filters.text & filters.private)
     async def handle_filename(client, message: Message):
-        """Handle filename input with flood protection"""
+        """Handle filename input with duplicate prevention"""
         user_id = message.from_user.id
         
-        if not await check_message_flood(user_id):
+        if not await check_message_duplicate(user_id):
             return
             
         session = user_sessions.get(user_id)
 
         if not session or not session.get('waiting_for_name'):
-            await message.reply_text("📁 Please send a file first!")
+            # Check if we recently sent this message
+            last_msg = user_last_messages.get(user_id, {}).get('last_response')
+            if last_msg != "send_file_first":
+                await message.reply_text("📁 Please send a file first!")
+                user_last_messages[user_id] = {
+                    'last_response': "send_file_first",
+                    'timestamp': time.time()
+                }
             return
 
         new_name = message.text.strip()
         if not is_valid_filename(new_name):
-            await message.reply_text(
-                "❌ **Invalid Filename**\n\n"
-                "Please use a valid filename:\n"
-                "• No special characters\n"
-                "• Max 100 characters\n"
-                "Example: `my_file`"
-            )
+            # Check if we recently sent this error
+            last_msg = user_last_messages.get(user_id, {}).get('last_response')
+            if last_msg != "invalid_filename":
+                await message.reply_text(
+                    "❌ **Invalid Filename**\n\n"
+                    "Please use a valid filename:\n"
+                    "• No special characters\n"
+                    "• Max 100 characters"
+                )
+                user_last_messages[user_id] = {
+                    'last_response': "invalid_filename",
+                    'timestamp': time.time()
+                }
             return
 
         # Process the file
         await process_file_rename(client, message, session, new_name)
 
     async def process_file_rename(client, message, session, new_name):
-        """Process file renaming with error handling"""
-        # Create a simple initial status message
+        """Process file renaming with duplicate prevention"""
+        # Create initial status message
         status_msg = await message.reply_text("⚡ **Processing your file...**")
         
         try:
@@ -148,7 +155,7 @@ def setup_bot_handlers(client: Client):
                     user_sessions[user_id]['files_today'] = 0
                 user_sessions[user_id]['files_today'] += 1
                 
-                # Optional: Log to channel
+                # Log to channel if configured
                 try:
                     if Config.LOG_CHANNEL:
                         await client.forward_messages(
@@ -158,25 +165,50 @@ def setup_bot_handlers(client: Client):
                         )
                 except:
                     pass
+                    
+                # Send success message (only if different)
+                success_msg = "✅ **File processing completed successfully!**"
+                if user_last_messages.get(user_id, {}).get('last_response') != "success":
+                    await message.reply_text(success_msg)
+                    user_last_messages[user_id] = {
+                        'last_response': "success",
+                        'timestamp': time.time()
+                    }
             else:
-                await status_msg.edit_text(f"❌ **Error:** {result['error']}")
+                error_msg = f"❌ **Error:** {result['error']}"
+                if user_last_messages.get(user_id, {}).get('last_response') != error_msg:
+                    await status_msg.edit_text(error_msg)
+                    user_last_messages[user_id] = {
+                        'last_response': error_msg,
+                        'timestamp': time.time()
+                    }
 
         except Exception as e:
-            await status_msg.edit_text(f"❌ **Processing failed:** {str(e)}")
+            error_msg = f"❌ **Processing failed:** {str(e)}"
+            if user_last_messages.get(user_id, {}).get('last_response') != error_msg:
+                await status_msg.edit_text(error_msg)
+                user_last_messages[user_id] = {
+                    'last_response': error_msg,
+                    'timestamp': time.time()
+                }
         finally:
             # Cleanup session
             user_sessions.pop(message.from_user.id, None)
 
-async def check_message_flood(user_id):
-    """Prevent message flooding"""
+async def check_message_duplicate(user_id):
+    """Prevent duplicate messages from same user"""
     now = time.time()
-    last_time = user_last_message.get(user_id, 0)
+    user_data = user_last_messages.get(user_id, {})
+    last_time = user_data.get('timestamp', 0)
     
-    # Allow 1 message per 2 seconds
-    if now - last_time < 2:
+    # Allow 1 message per cooldown period
+    if now - last_time < message_cooldown:
         return False
         
-    user_last_message[user_id] = now
+    user_last_messages[user_id] = {
+        'timestamp': now,
+        'last_response': user_data.get('last_response', '')
+    }
     return True
 
 async def check_rate_limit(user_id):
@@ -194,6 +226,17 @@ async def check_rate_limit(user_id):
     if last_file_time and (now - last_file_time) < timedelta(hours=1):
         file_count = session.get('files_this_hour', 0)
         if file_count >= Config.USER_RATE_LIMIT:
+            # Only send rate limit message once per violation
+            if user_last_messages.get(user_id, {}).get('last_response') != "rate_limit":
+                await message.reply_text(
+                    "⏳ **Rate Limit Reached**\n\n"
+                    f"Limit: {Config.USER_RATE_LIMIT} files/hour\n"
+                    "Please wait before sending more files."
+                )
+                user_last_messages[user_id] = {
+                    'last_response': "rate_limit",
+                    'timestamp': time.time()
+                }
             return False
         session['files_this_hour'] = file_count + 1
     else:

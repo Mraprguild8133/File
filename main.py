@@ -17,7 +17,7 @@ from handlers.rename_handler import (
 )
 from handlers.admin_handler import admin_panel, bot_stats, broadcast_command
 from handlers.callback_handler import handle_callback_query
-from utils.helpers import setup_logging, error_handler
+from utils.helpers import setup_logging
 from utils.file_utils import ensure_directories
 
 # Global variables
@@ -91,6 +91,11 @@ class Progress:
             return f"{eta_seconds:.0f}s"
         return "Unknown"
 
+async def error_handler(client: Client, update: Exception):
+    """Global error handler"""
+    logger = logging.getLogger(__name__)
+    logger.error(f"Error in client: {update}")
+
 async def start_bot():
     """Initialize and start the bot"""
     global app
@@ -104,7 +109,7 @@ async def start_bot():
         api_id=config.API_ID,
         api_hash=config.API_HASH,
         bot_token=config.BOT_TOKEN,
-        workers=100,  # Increased workers for large files
+        workers=100,
         workdir=os.getcwd(),
         sleep_threshold=60
     )
@@ -165,9 +170,6 @@ def register_handlers(client: Client):
     
     # Callback query handler
     client.add_handler(CallbackQueryHandler(handle_callback_query))
-    
-    # Error handler
-    client.add_error_handler(error_handler)
 
 async def download_file_with_progress(
     message: Message, 

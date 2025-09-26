@@ -1,7 +1,7 @@
 # =====================================================================================
 # Project: Telegram File Rename Bot
 # Description: A bot to rename Telegram files with custom thumbnail and caption support.
-# Version: 2.1 (Multi-File, No Database)
+# Version: 2.2 (Multi-File, No Database, Fixed Media Errors)
 # Last Updated: 26-Sep-2025
 # =====================================================================================
 
@@ -12,6 +12,7 @@ import asyncio
 import logging
 from logging.handlers import RotatingFileHandler
 from datetime import datetime
+from urllib.parse import urlparse
 
 # Third-party libraries
 try:
@@ -22,7 +23,7 @@ try:
         InlineKeyboardButton,
         InlineKeyboardMarkup,
     )
-    from pyrogram.errors import FloodWait, UserNotParticipant
+    from pyrogram.errors import FloodWait, UserNotParticipant, WebpageMediaEmpty
 except ImportError:
     print("Pyrogram is not installed. Please install it using: pip install pyrogram TgCrypto")
     exit()
@@ -88,10 +89,12 @@ class InMemoryDatabase:
         self._get_or_create_user()['thumbnail'] = thumbnail
 
     async def delete_thumbnail(self):
-        if self.id in user_data: user_data[self.id]['thumbnail'] = None
+        if self.id in user_data: 
+            user_data[self.id]['thumbnail'] = None
 
     async def delete_caption(self):
-        if self.id in user_data: user_data[self.id]['caption'] = None
+        if self.id in user_data: 
+            user_data[self.id]['caption'] = None
 
 # --- Logging Setup ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -119,16 +122,30 @@ def TimeFormatter(milliseconds: int) -> str:
     if hrs >= 24: days, hrs = divmod(hrs, 24)
     return f"{str(int(days)) + 'd ' if days > 0 else ''}{str(int(hrs)) + 'h ' if hrs > 0 else ''}{str(int(Mins)) + 'm ' if Mins > 0 else ''}{str(int(secs)) + 's' if secs > 0 else ''}"
 
+def is_valid_url(url):
+    """Validate URL format"""
+    try:
+        if not url or not isinstance(url, str):
+            return False
+        result = urlparse(url)
+        return all([result.scheme in ['http', 'https'], result.netloc])
+    except:
+        return False
+
 async def progress_for_pyrogram(current, total, ud_type, message, start):
     now = time.time()
     diff = now - start
     if round(diff % 10.00) == 0 or current == total:
         percentage = current * 100 / total
-        speed = current / diff
+        speed = current / diff if diff > 0 else 0
         eta = TimeFormatter(round((total - current) / speed) * 1000) if speed > 0 else 'N/A'
         progress_str = Txt.PROGRESS_BAR.format(round(percentage, 2), humanbytes(current), humanbytes(total), humanbytes(speed), eta)
-        try: await message.edit(text=f"**{ud_type}**\n\n{progress_str}")
-        except (FloodWait, ConnectionError): pass
+        try: 
+            await message.edit(text=f"**{ud_type}**\n\n{progress_str}")
+        except FloodWait as e:
+            await asyncio.sleep(e.value)
+        except Exception:
+            pass  # Don't break the upload if progress update fails
 
 # --- Command & Message Handlers ---
 @bot.on_message(filters.private & filters.command("start"))
@@ -138,19 +155,78 @@ async def start_command(client, message):
         [InlineKeyboardButton('Aʙᴏᴜᴛ', callback_data='about'), InlineKeyboardButton('Hᴇʟᴘ', callback_data='help')]
     ])
     caption = Txt.START_MSG.format(message.from_user.mention)
-    if Config.START_PIC: await message.reply_photo(Config.START_PIC, caption=caption, reply_markup=buttons)
-    else: await message.reply_text(text=caption, reply_markup=buttons, disable_web_page_preview=True)
+    
+    # Safe START_PIC handling
+    if Config.START_PIC and is_valid_url(Config.START_PIC):
+        try:
+            await message.reply_photo(Config.START_PIC, caption=caption, reply_markup=buttons)
+            return
+        except WebpageMediaEmpty:
+            LOGGER.warning(f"Invalid START_PIC URL: {Config.START_PIC}")
+        except Exception as e:
+            LOGGER.error(f"Error sending START_PIC: {e}")
+    
+    # Fallback to text message if photo fails
+    await message.reply_text(text=caption, reply_markup=buttons, disable_web_page_preview=True)
 
 @bot.on_message(filters.private & (filters.document | filters.video | filters.audio))
 async def file_handler(client, message: Message):
     file = message.document or message.video or message.audio
-    buttons = InlineKeyboardMarkup([[InlineKeyboardButton("📝 Rename", callback_data="rename"), InlineKeyboardButton("✖️ Cancel", callback_data="close")]])
-    await message.reply_text(f"**File Name:** `{file.file_name}`\n**File Size:** `{humanbytes(file.file_size)}`\n\nSelect an option:", reply_markup=buttons, quote=True)
+    
+    # File size validation (optional - remove if not needed)
+    MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2GB
+    if file.file_size > MAX_FILE_SIZE:
+        await message.reply_text(f"❌ File size too large. Maximum allowed: {humanbytes(MAX_FILE_SIZE)}")
+        return
+    
+    buttons = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📝 Rename", callback_data="rename"), 
+         InlineKeyboardButton("✖️ Cancel", callback_data="close")]
+    ])
+    await message.reply_text(
+        f"**File Name:** `{file.file_name}`\n**File Size:** `{humanbytes(file.file_size)}`\n\nSelect an option:", 
+        reply_markup=buttons, 
+        quote=True
+    )
 
 @bot.on_message(filters.private & filters.photo)
 async def set_thumbnail_command(client, message):
     await InMemoryDatabase(message.from_user.id).set_thumbnail(message.photo.file_id)
     await message.reply_text("✅ Your custom thumbnail has been saved.", quote=True)
+
+@bot.on_message(filters.private & filters.command("set_caption"))
+async def set_caption_command(client, message):
+    if len(message.command) < 2:
+        await message.reply_text("**Usage:** `/set_caption Your caption text here`\n\nYou can use `{filename}` and `{filesize}` as variables.")
+        return
+    
+    caption = " ".join(message.command[1:])
+    await InMemoryDatabase(message.from_user.id).set_caption(caption)
+    await message.reply_text("✅ Custom caption set successfully.", quote=True)
+
+@bot.on_message(filters.private & filters.command("del_caption"))
+async def delete_caption_command(client, message):
+    await InMemoryDatabase(message.from_user.id).delete_caption()
+    await message.reply_text("✅ Custom caption deleted.", quote=True)
+
+@bot.on_message(filters.private & filters.command("see_caption"))
+async def see_caption_command(client, message):
+    user_info = await InMemoryDatabase(message.from_user.id).get_user()
+    caption = user_info.get('caption', 'No custom caption set.')
+    await message.reply_text(f"**Your Current Caption:**\n`{caption}`", quote=True)
+
+@bot.on_message(filters.private & filters.command("del_thumb"))
+async def delete_thumbnail_command(client, message):
+    await InMemoryDatabase(message.from_user.id).delete_thumbnail()
+    await message.reply_text("✅ Custom thumbnail deleted.", quote=True)
+
+@bot.on_message(filters.private & filters.command("see_thumb"))
+async def see_thumbnail_command(client, message):
+    user_info = await InMemoryDatabase(message.from_user.id).get_user()
+    if user_info.get('thumbnail'):
+        await message.reply_photo(user_info['thumbnail'], caption="Your current thumbnail:")
+    else:
+        await message.reply_text("No custom thumbnail set.", quote=True)
 
 # --- Callback Query Handler ---
 @bot.on_callback_query()
@@ -161,74 +237,189 @@ async def callback_query_handler(client, query: CallbackQuery):
     if data == "rename":
         await message.delete()
         try:
-            ask = await client.ask(query.from_user.id, "**Send me the new filename.**\n\n_Include the file extension._", timeout=300)
-            await process_rename(client, message.reply_to_message, ask.text)
+            ask = await client.ask(
+                query.from_user.id, 
+                "**Send me the new filename.**\n\n_Include the file extension._", 
+                timeout=300
+            )
+            await process_rename(client, message.reply_to_message, ask.text, query.from_user.id)
         except asyncio.TimeoutError:
             await client.send_message(query.from_user.id, "⚠️ **Timeout:** Task cancelled.")
         except Exception as e:
-            LOGGER.error(e)
-            await message.reply_text("An error occurred. Please try again.")
+            LOGGER.error(f"Error in rename callback: {e}")
+            await client.send_message(query.from_user.id, "❌ An error occurred. Please try again.")
             
-    elif data == "close": await message.delete()
-    elif data == "help": await message.edit_reply_markup(InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Bᴀᴄᴋ", callback_data="start")]]))
-    elif data == "about": await message.edit_reply_markup(InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Bᴀᴄᴋ", callback_data="start")]]))
+    elif data == "close": 
+        await message.delete()
+    elif data == "help": 
+        await message.edit(Txt.HELP_MSG, reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("◀️ Back", callback_data="start")]
+        ]))
+    elif data == "about": 
+        await message.edit(Txt.ABOUT_MSG, reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("◀️ Back", callback_data="start")]
+        ]))
     elif data == "start":
         buttons = InlineKeyboardMarkup([
             [InlineKeyboardButton('Uᴘᴅᴀᴛᴇs', url='https://t.me/Mo_Tech_YT'), InlineKeyboardButton('Sᴜᴘᴘᴏʀᴛ', url='https://t.me/Mo_Tech_Group')],
             [InlineKeyboardButton('Aʙᴏᴜᴛ', callback_data='about'), InlineKeyboardButton('Hᴇʟᴘ', callback_data='help')]
         ])
-        await message.edit_reply_markup(buttons)
+        await message.edit(Txt.START_MSG.format(query.from_user.mention), reply_markup=buttons)
 
-async def process_rename(client, message, new_name: str):
+async def process_rename(client, message, new_name: str, user_id: int):
+    # Validate filename
+    if not new_name or len(new_name) > 255:
+        await client.send_message(user_id, "❌ Invalid filename. Please provide a valid name (max 255 characters).")
+        return
+    
+    # Check for forbidden characters
+    forbidden_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|']
+    if any(char in new_name for char in forbidden_chars):
+        await client.send_message(user_id, "❌ Filename contains invalid characters.")
+        return
+
+    # Force subscription check
     if Config.FORCE_SUB:
         try:
-            if not await client.get_chat_member(Config.FORCE_SUB, message.from_user.id):
-                return await message.reply_text(f"**You must join our channel to use this bot.**\n\n👉 https://t.me/{Config.FORCE_SUB}")
+            if not await client.get_chat_member(Config.FORCE_SUB, user_id):
+                return await client.send_message(
+                    user_id, 
+                    f"**You must join our channel to use this bot.**\n\n👉 https://t.me/{Config.FORCE_SUB}"
+                )
         except UserNotParticipant:
-            return await message.reply_text(f"**You must join our channel to use this bot.**\n\n👉 https://t.me/{Config.FORCE_SUB}")
+            return await client.send_message(
+                user_id, 
+                f"**You must join our channel to use this bot.**\n\n👉 https://t.me/{Config.FORCE_SUB}"
+            )
+        except Exception as e:
+            LOGGER.error(f"Force sub check error: {e}")
 
-    user_info = await InMemoryDatabase(message.from_user.id).get_user()
+    user_info = await InMemoryDatabase(user_id).get_user()
     file = message.document or message.video or message.audio
     
-    status_msg = await message.reply_text("📥 Downloading...", quote=True)
+    status_msg = await client.send_message(user_id, "📥 Downloading...")
     
     file_path, thumb_path = None, None
     try:
-        file_path = await message.download(progress=progress_for_pyrogram, progress_args=("Downloading...", status_msg, time.time()))
+        file_path = await message.download(
+            progress=progress_for_pyrogram, 
+            progress_args=("Downloading...", status_msg, time.time())
+        )
+        
         if user_info.get('thumbnail'):
             thumb_path = await client.download_media(user_info['thumbnail'])
+            
     except Exception as e:
-        return await status_msg.edit(f"❌ **Download Failed:** {e}")
+        LOGGER.error(f"Download error: {e}")
+        await status_msg.edit(f"❌ **Download Failed:** {str(e)}")
+        return
 
+    # Rename file
     new_file_path = os.path.join(os.path.dirname(file_path), new_name)
-    os.rename(file_path, new_file_path)
+    try:
+        os.rename(file_path, new_file_path)
+    except Exception as e:
+        await status_msg.edit(f"❌ **Rename Failed:** {str(e)}")
+        if file_path and os.path.exists(file_path):
+            os.remove(file_path)
+        return
 
     await status_msg.edit("📤 Uploading...")
     
-    caption = user_info.get('caption', new_name).format(filename=new_name, filesize=humanbytes(file.file_size))
+    # Prepare caption
+    caption = user_info.get('caption', '{filename}').format(
+        filename=new_name, 
+        filesize=humanbytes(file.file_size)
+    )
     
     try:
-        send_func = getattr(client, f"send_{message.media.value}")
-        await send_func(
-            message.chat.id, document=new_file_path if message.document else new_file_path,
-            thumb=thumb_path, caption=caption,
-            progress=progress_for_pyrogram, progress_args=("Uploading...", status_msg, time.time())
-        )
+        # Determine media type and send accordingly
+        if message.document:
+            await client.send_document(
+                user_id,
+                document=new_file_path,
+                thumb=thumb_path,
+                caption=caption,
+                progress=progress_for_pyrogram,
+                progress_args=("Uploading...", status_msg, time.time())
+            )
+        elif message.video:
+            await client.send_video(
+                user_id,
+                video=new_file_path,
+                thumb=thumb_path,
+                caption=caption,
+                progress=progress_for_pyrogram,
+                progress_args=("Uploading...", status_msg, time.time())
+            )
+        elif message.audio:
+            await client.send_audio(
+                user_id,
+                audio=new_file_path,
+                thumb=thumb_path,
+                caption=caption,
+                progress=progress_for_pyrogram,
+                progress_args=("Uploading...", status_msg, time.time())
+            )
+        
+        # Log to channel
         if Config.LOG_CHANNEL:
-            await client.send_message(Config.LOG_CHANNEL, f"**User:** {message.from_user.mention}\n**Renamed:** `{file.file_name}` -> `{new_name}`")
+            try:
+                await client.send_message(
+                    Config.LOG_CHANNEL, 
+                    f"**User:** {message.from_user.mention}\n**Renamed:** `{file.file_name}` → `{new_name}`"
+                )
+            except Exception as e:
+                LOGGER.error(f"Log channel error: {e}")
+                
     except Exception as e:
-        await status_msg.edit(f"❌ **Upload Failed:** {e}")
+        LOGGER.error(f"Upload error: {e}")
+        await status_msg.edit(f"❌ **Upload Failed:** {str(e)}")
     finally:
-        await status_msg.delete()
-        if file_path and os.path.exists(file_path): os.remove(file_path)
-        if new_file_path and os.path.exists(new_file_path): os.remove(new_file_path)
-        if thumb_path and os.path.exists(thumb_path): os.remove(thumb_path)
+        # Cleanup
+        try:
+            await status_msg.delete()
+        except:
+            pass
+            
+        for path in [file_path, new_file_path, thumb_path]:
+            if path and os.path.exists(path):
+                try:
+                    os.remove(path)
+                except:
+                    pass
+
+def validate_config():
+    """Validate configuration variables"""
+    required_vars = ['API_ID', 'API_HASH', 'BOT_TOKEN', 'ADMIN', 'LOG_CHANNEL']
+    
+    for var in required_vars:
+        if not hasattr(Config, var) or not getattr(Config, var):
+            raise ValueError(f"Missing required configuration: {var}")
+    
+    # Validate API_ID is integer
+    try:
+        int(Config.API_ID)
+    except ValueError:
+        raise ValueError("API_ID must be an integer")
+    
+    # Validate BOT_TOKEN format
+    if not Config.BOT_TOKEN or ':' not in Config.BOT_TOKEN:
+        raise ValueError("Invalid BOT_TOKEN format")
 
 # --- Main Execution ---
 if __name__ == "__main__":
-    if not all([Config.API_ID, Config.API_HASH, Config.BOT_TOKEN, Config.ADMIN, Config.LOG_CHANNEL]):
-        LOGGER.critical("FATAL ERROR: One or more required variables in config.py are missing!")
+    try:
+        validate_config()
+        LOGGER.info("Configuration validated successfully")
+    except ValueError as e:
+        LOGGER.critical(f"Configuration error: {e}")
         exit(1)
+    
     LOGGER.info("Bot is starting...")
-    bot.run()
-    LOGGER.info("Bot has stopped.")
+    try:
+        bot.run()
+    except Exception as e:
+        LOGGER.critical(f"Bot crashed: {e}")
+    finally:
+        LOGGER.info("Bot has stopped.")

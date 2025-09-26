@@ -1,28 +1,27 @@
 import os
-from dotenv import load_dotenv
-
-# Load environment variables from a .env file if it exists
-load_dotenv()
 
 class Config:
-    """
-    Configuration class to hold all the environment variables.
-    """
-    # Telegram API credentials
-    API_ID = os.environ.get("API_ID")
-    API_HASH = os.environ.get("API_HASH")
-
-    # Bot token from @BotFather
-    BOT_TOKEN = os.environ.get("BOT_TOKEN")
-
-    # Log channel/storage for files
-    # This should be the ID of the channel where files will be forwarded/stored.
-    # Make sure your bot is an admin in this channel.
-    LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL"))
-
-# Basic check to ensure essential variables are set
-if not all([Config.API_ID, Config.API_HASH, Config.BOT_TOKEN, Config.LOG_CHANNEL]):
-    raise RuntimeError(
-        "One or more essential environment variables (API_ID, API_HASH, "
-        "BOT_TOKEN, LOG_CHANNEL) are missing."
-    )
+    # API Configuration
+    API_ID = int(os.getenv("API_ID", 123456))
+    API_HASH = os.getenv("API_HASH", "your_api_hash")
+    BOT_TOKEN = os.getenv("BOT_TOKEN", "your_bot_token")
+    
+    # Bot Settings
+    LOG_CHANNEL = int(os.getenv("LOG_CHANNEL", -100123456789))
+    
+    # Performance Optimization
+    MAX_WORKERS = 50
+    MAX_CONCURRENT_DOWNLOADS = 5
+    MAX_CONCURRENT_UPLOADS = 5
+    
+    # Thumbnail Settings
+    CUSTOM_THUMBNAIL = os.getenv("CUSTOM_THUMBNAIL", "thumbnail.jpg")
+    THUMBNAIL_SIZE = (320, 320)
+    
+    # File Handling
+    MAX_FILE_SIZE = 4 * 1024 * 1024 * 1024  # 4GB
+    CHUNK_SIZE = 64 * 1024  # 64KB chunks for faster processing
+    
+    # Rate Limiting
+    REQUESTS_PER_MINUTE = 30
+    FILES_PER_USER_PER_HOUR = 10

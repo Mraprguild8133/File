@@ -9,40 +9,29 @@ import logging
 logger = logging.getLogger(__name__)
 
 class TurboUploader:
-    """Turbo-optimized file uploader with thumbnail support"""
+    """Turbo-optimized file uploader with flood protection"""
     
     def __init__(self):
         self.thumbnail = self.load_thumbnail()
+        self.last_update_time = 0
+        self.last_percent = 0
 
     def load_thumbnail(self):
         """Load or create thumbnail"""
         try:
             if os.path.exists(Config.CUSTOM_THUMBNAIL):
-                # Validate thumbnail
                 with Image.open(Config.CUSTOM_THUMBNAIL) as img:
                     img.thumbnail(Config.THUMBNAIL_SIZE)
-                    logger.info(f"Custom thumbnail loaded: {Config.CUSTOM_THUMBNAIL}")
                 return Config.CUSTOM_THUMBNAIL
         except Exception as e:
             logger.warning(f"Thumbnail load failed: {e}")
-        
-        # Create default thumbnail if needed
-        return self.create_default_thumbnail()
-
-    def create_default_thumbnail(self):
-        """Create a default thumbnail"""
-        try:
-            img = Image.new('RGB', Config.THUMBNAIL_SIZE, color='#2563eb')
-            img.save('default_thumb.jpg')
-            logger.info("Default thumbnail created")
-            return 'default_thumb.jpg'
-        except Exception as e:
-            logger.error(f"Failed to create default thumbnail: {e}")
-            return None
+        return None
 
     async def upload_file(self, client, chat_id, file_path, status_message, caption):
-        """Upload file with turbo speed - CORRECTED SYNTAX"""
+        """Upload file with flood protection"""
         start_time = time.time()
+        self.last_update_time = 0
+        self.last_percent = 0
         
         try:
             if not os.path.exists(file_path):
@@ -51,13 +40,16 @@ class TurboUploader:
             file_size = os.path.getsize(file_path)
             file_name = os.path.basename(file_path)
 
-            await status_message.edit_text(
-                f"📤 **Turbo Upload Starting...**\n\n"
+            # Initial status (only once)
+            initial_text = (
+                f"📤 **Uploading...**\n\n"
                 f"**File:** `{file_name}`\n"
-                f"**Size:** {self.format_bytes(file_size)}"
+                f"**Size:** {self.format_bytes(file_size)}\n"
+                f"**Status:** Starting..."
             )
+            await status_message.edit_text(initial_text)
 
-            # Upload with progress tracking - CORRECTED PARAMETERS
+            # Upload with progress tracking
             await client.send_document(
                 chat_id=chat_id,
                 document=file_path,
@@ -72,8 +64,18 @@ class TurboUploader:
             
             logger.info(f"Upload completed: {file_name} in {upload_time:.1f}s")
             
-            # Delete status message after successful upload
+            # Final completion message
+            completion_text = (
+                f"✅ **Upload Complete!**\n\n"
+                f"**File:** `{file_name}`\n"
+                f"**Time:** {int(upload_time)}s\n"
+                f"**Speed:** {self.format_bytes(speed)}/s"
+            )
+            
             try:
+                await status_message.edit_text(completion_text)
+                # Delete after 3 seconds
+                await asyncio.sleep(3)
                 await status_message.delete()
             except:
                 pass
@@ -85,37 +87,52 @@ class TurboUploader:
             return {'success': False, 'error': str(e)}
 
     async def progress_callback(self, current, total, status_message, start_time, action):
-        """Upload progress callback"""
+        """Flood-protected upload progress callback"""
         if total == 0:
             return
 
-        elapsed = time.time() - start_time
+        current_time = time.time()
+        elapsed = current_time - start_time
         percent = (current / total) * 100
         
-        # Only update every 5% progress or 2 seconds
-        if int(percent) % 5 != 0 and elapsed % 2 > 0.1:
+        # Flood protection: Update only if:
+        # 1. At least 4 seconds passed AND progress increased by at least 3%
+        # 2. Or if it's the first update
+        # 3. Or if upload is complete
+        should_update = (
+            current_time - self.last_update_time >= 4 and 
+            percent - self.last_percent >= 3
+        ) or self.last_update_time == 0 or percent >= 99.9
+
+        if not should_update:
             return
 
         speed = current / elapsed if elapsed > 0 else 0
         eta = (total - current) / speed if speed > 0 else 0
 
-        # Create progress bar
-        filled_blocks = int(percent / 5)
-        bar = "█" * filled_blocks + "░" * (20 - filled_blocks)
+        # Simple progress display
+        filled_blocks = min(8, int(percent / 12.5))
+        bar = "█" * filled_blocks + "▒" * (8 - filled_blocks)
         
         progress_text = (
             f"**{action}**\n\n"
-            f"`{bar}`\n"
-            f"**Progress:** {percent:.1f}%\n"
+            f"`{bar} {percent:.1f}%`\n"
             f"**Speed:** {self.format_bytes(speed)}/s\n"
-            f"**ETA:** {int(eta)}s | **Elapsed:** {int(elapsed)}s\n"
-            f"`{self.format_bytes(current)} / {self.format_bytes(total)}`"
+            f"**Remaining:** ~{int(eta)}s\n"
+            f"**Progress:** {self.format_bytes(current)} / {self.format_bytes(total)}"
         )
         
         try:
             await status_message.edit_text(progress_text)
-        except Exception:
-            # Silent fail to avoid breaking upload
+            self.last_update_time = current_time
+            self.last_percent = percent
+        except Exception as e:
+            # Handle flood wait specifically
+            if "FLOOD_WAIT" in str(e):
+                wait_time = int(str(e).split("FLOOD_WAIT_")[1].split(")")[0])
+                logger.warning(f"Upload flood wait: {wait_time}s")
+                await asyncio.sleep(wait_time)
+            # Skip update for other errors
             pass
 
     def format_bytes(self, size):

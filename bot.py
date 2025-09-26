@@ -4,55 +4,74 @@ import logging
 import sys
 import asyncio
 from config import Config
-from bot_handle import register_handlers
+
+# Try different import approaches
+try:
+    from bot_handle import register_handlers
+except ImportError as e:
+    print(f"Import error: {e}")
+    # Alternative import approach
+    try:
+        import bot_handle
+        register_handlers = bot_handle.register_handlers
+    except ImportError:
+        print("Failed to import bot_handle. Please check the file exists.")
+        sys.exit(1)
+
 from web_server import start_web_server, stop_web_server
 
-# Turbo-optimized logging
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('turbo_bot.log', encoding='utf-8'),
+        logging.FileHandler('bot.log', encoding='utf-8'),
         logging.StreamHandler(sys.stdout)
     ]
 )
 logger = logging.getLogger(__name__)
 
 async def main():
-    """Turbo-optimized main function"""
+    """
+    The main function to start the bot with web server support.
+    """
     try:
-        # Validate configuration
+        # Validate essential configuration
         if not all([Config.API_ID, Config.API_HASH, Config.BOT_TOKEN]):
             logger.error("Missing essential configuration")
             sys.exit(1)
 
         # Start web server
-        logger.info("Starting turbo web server...")
-        start_web_server()
+        logger.info("Starting web server on port 5000...")
+        web_server_started = start_web_server()
+        
+        if web_server_started:
+            logger.info("Web server started successfully")
+        else:
+            logger.warning("Failed to start web server")
 
-        # Turbo-optimized client configuration
+        # Initialize the Pyrogram Client
         app = Client(
-            "turbo_file_renamer_bot",
+            "file_renamer_bot",
             api_id=Config.API_ID,
             api_hash=Config.API_HASH,
             bot_token=Config.BOT_TOKEN,
-            workers=Config.MAX_WORKERS,
-            max_concurrent_transmissions=Config.MAX_CONCURRENT_UPLOADS,
-            sleep_threshold=30  # Reduced for faster response
+            workers=100,  # Increased for better performance
+            max_concurrent_transmissions=10  # Better upload management
         )
 
-        # Register turbo handlers
+        # Register all the handlers for the bot
         register_handlers(app)
 
-        # Run with extreme speed
-        logger.info("🚀 Starting Turbo Bot...")
+        # Run the bot
+        logger.info("Bot is starting...")
         await app.start()
         
-        # Get bot info
+        # Get bot info to confirm it's working
         me = await app.get_me()
-        logger.info(f"Turbo Bot started successfully: @{me.username}")
+        logger.info(f"Bot started successfully as @{me.username}")
         
-        # Keep running
+        # Keep the bot running
         await asyncio.Event().wait()
         
     except (ApiIdInvalid, AccessTokenInvalid) as e:
@@ -65,8 +84,11 @@ async def main():
     finally:
         logger.info("Cleaning up...")
         stop_web_server()
-        await app.stop()
-        print("🚀 Turbo Bot has stopped.")
+        try:
+            await app.stop()
+        except:
+            pass
+        print("Bot has stopped.")
 
 if __name__ == "__main__":
     asyncio.run(main())

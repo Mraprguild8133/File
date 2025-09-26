@@ -15,38 +15,34 @@ class TurboFileProcessor:
     def __init__(self):
         self.downloader = TurboDownloader()
         self.uploader = TurboUploader()
-        self.processing_tasks = {}
 
     async def process_file(self, client, file_message, new_filename, status_message, chat_id):
         """Process file with turbo speed"""
+        downloaded_path = None
+        renamed_path = None
+        
         try:
             # Step 1: Download file
-            download_result = await self.downloader.download_file(
-                file_message, status_message
-            )
+            download_result = await self.downloader.download_file(file_message, status_message)
             
             if not download_result['success']:
                 return download_result
 
+            downloaded_path = download_result['file_path']
+
             # Step 2: Rename file
-            rename_result = await self.rename_file(
-                download_result['file_path'], new_filename
-            )
+            rename_result = await self.rename_file(downloaded_path, new_filename)
             
             if not rename_result['success']:
-                await self.cleanup_files(download_result['file_path'])
+                await self.cleanup_files(downloaded_path)
                 return rename_result
+
+            renamed_path = rename_result['file_path']
 
             # Step 3: Upload file
             upload_result = await self.uploader.upload_file(
-                client, chat_id, rename_result['file_path'], status_message,
-                f"**Renamed to:** `{os.path.basename(rename_result['file_path'])}`"
-            )
-
-            # Step 4: Cleanup
-            await self.cleanup_files(
-                download_result['file_path'], 
-                rename_result['file_path']
+                client, chat_id, renamed_path, status_message,
+                f"**Renamed to:** `{os.path.basename(renamed_path)}`"
             )
 
             return upload_result
@@ -54,6 +50,9 @@ class TurboFileProcessor:
         except Exception as e:
             logger.error(f"Processing error: {e}")
             return {'success': False, 'error': str(e)}
+        finally:
+            # Always cleanup temporary files
+            await self.cleanup_files(downloaded_path, renamed_path)
 
     async def rename_file(self, file_path, new_name):
         """Rename file with extension preservation"""
@@ -82,5 +81,6 @@ class TurboFileProcessor:
             if file_path and os.path.exists(file_path):
                 try:
                     os.remove(file_path)
+                    logger.debug(f"Cleaned up: {file_path}")
                 except Exception as e:
                     logger.warning(f"Cleanup failed for {file_path}: {e}")
